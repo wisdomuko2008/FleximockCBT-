@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flexi CBT – Admin Dashboard</title>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<style>
+body { font-family: Arial, Helvetica, sans-serif; margin:0; background:#f4f6f4; }
+.header { background:#0b6623; color:white; padding:15px; text-align:center; font-size:22px; font-weight:bold; }
+.stats, .top-performers { display:flex; justify-content:space-around; flex-wrap:wrap; padding:10px; background:#eaf5ee; color:#0b6623; font-weight:bold; margin-top:5px; }
+#searchBar { width: 90%; max-width:400px; display:block; margin:10px auto; padding:8px 12px; border-radius:6px; border:1px solid #ccc; font-size:16px; }
+.spinner { display:flex; justify-content:center; align-items:center; height:60vh; font-size:20px; color:#0b6623; }
+.view { display:none; padding:15px; max-width:800px; margin:0 auto; }
+.candidate-list { display:flex; flex-direction:column; gap:10px; max-height:50vh; overflow-y:auto; }
+.candidate-item { padding:12px; border-radius:8px; cursor:pointer; box-shadow:0 2px 5px rgba(0,0,0,0.2); transition:0.2s; position: relative; }
+.candidate-item:hover { transform:scale(1.02); }
+.back-btn { margin-bottom:12px; padding:10px 15px; background:#0b6623; color:white; border:none; border-radius:6px; cursor:pointer; }
+.detail-card { background:white; padding:12px; border-radius:8px; box-shadow:0 2px 5px rgba(0,0,0,0.2); margin-bottom:10px; }
+.detail-card h3 { margin:0 0 6px 0; color:#0b6623; }
+.detail-card p { margin:2px 0; }
+.export-btn { display:block; margin:10px auto; padding:10px 20px; background:#0b6623; color:white; border:none; border-radius:6px; cursor:pointer; }
+#contextMenu { position:absolute; display:none; background:white; border:1px solid #ccc; 
+  box-shadow:0 2px 5px rgba(0,0,0,0.2); border-radius:6px; z-index:1000; }
+#deleteOption { padding:8px 12px; cursor:pointer; color:#dc3545; font-weight:bold; }
+</style>
+</head>
+<body>
+
+<div class="header">Flexi CBT – Admin Dashboard</div>
+
+<!-- Top Performers Panel -->
+<div class="top-performers" id="topPanel">Top Performers: Loading…</div>
+
+<!-- Stats Panel -->
+<div class="stats" id="statsPanel">
+  <div>Total: <span id="totalCount">0</span></div>
+  <div>Avg: <span id="avgScore">0</span></div>
+  <div>High: <span id="highScore">0</span></div>
+  <div>Low: <span id="lowScore">0</span></div>
+  <div>New Today: <span id="newToday">0</span></div>
+</div>
+<div><button class="export-btn" id="deleteAllBtn" style="background:#dc3545;">
+   Delete All Results
+</button></div>
+<input type="text" id="searchBar" placeholder="Search students by name..." />
+<button class="export-btn" id="exportBtn">Export to CSV</button>
+
+<div id="spinner" class="spinner">Loading students...</div>
+
+<!-- PAGE 1: Student List -->
+<div id="page1" class="view">
+  <div class="candidate-list" id="candidateList"></div>
+</div>
+
+<!-- PAGE 2: Candidate Details -->
+<div id="page2" class="view">
+  <button class="back-btn" id="backBtn">← Back to students</button>
+  <div id="candidateDetails"></div>
+</div>
+
+<!-- Context Menu -->
+<div id="contextMenu">
+  <div id="deleteOption">🗑️ Delete</div>
+</div>
+
+<script>
+firebase.initializeApp({
+  apiKey: "AIzaSyCPumFid5YNTWug52q2VDtSDQTLU9REgss",
+  authDomain: "flexi-tutors.firebaseapp.com",
+  projectId: "flexi-tutors",
+});
+const db = firebase.firestore();
+
+const spinner = document.getElementById("spinner");
+const page1 = document.getElementById("page1");
+const page2 = document.getElementById("page2");
+const candidateListEl = document.getElementById("candidateList");
+const candidateDetailsEl = document.getElementById("candidateDetails");
+const backBtn = document.getElementById("backBtn");
+const searchBar = document.getElementById("searchBar");
+const totalCountEl = document.getElementById("totalCount");
+const avgScoreEl = document.getElementById("avgScore");
+const highScoreEl = document.getElementById("highScore");
+const lowScoreEl = document.getElementById("lowScore");
+const newTodayEl = document.getElementById("newToday");
+const exportBtn = document.getElementById("exportBtn");
+const topPanel = document.getElementById("topPanel");
+const contextMenu = document.getElementById("contextMenu");
+const deleteOption = document.getElementById("deleteOption");
+
+let allCandidates = [];
+let longPressTimer = null;
+let selectedCandidateId = null;
+
+// ===== FETCH STUDENTS WITH REAL-TIME UPDATES =====
+db.collection("cbtResults").onSnapshot(snapshot => {
+  const now = Date.now();
+  allCandidates = [];
+  let totalScore = 0, high = 0, low = Infinity, newTodayCount = 0;
+
+  snapshot.forEach(doc => {
+    const d = doc.data();
+    const id = doc.id;
+    const name = d.candidateName || "Unnamed Candidate";
+    const score = Number(d.jambScore) || 0;
+
+    const submittedTime = d.submittedAt?.toDate?.().getTime() || 0;
+    const isNew = now - submittedTime <= 24*60*60*1000;
+    if(isNew) newTodayCount++;
+
+    totalScore += score;
+    if(score > high) high = score;
+    if(score < low) low = score;
+
+    allCandidates.push({id, name, score, isNew, submittedTime, rawData: d});
+  });
+
+  // Sort descending by score
+  allCandidates.sort((a, b) => b.score - a.score);
+
+  spinner.style.display = "none";
+  page1.style.display = "block";
+
+  // Stats
+  totalCountEl.textContent = allCandidates.length;
+  avgScoreEl.textContent = allCandidates.length ? (totalScore/allCandidates.length).toFixed(2) : 0;
+  highScoreEl.textContent = high;
+  lowScoreEl.textContent = low === Infinity ? 0 : low;
+  newTodayEl.textContent = newTodayCount;
+
+  // Top 5 performers
+  const top5 = allCandidates.slice(0,5);
+  topPanel.innerHTML = "Top 5: " + top5.map(c => `${c.name} (${c.score})`).join(" | ");
+
+  renderCandidateList(allCandidates);
+
+  // Optional notification for new submissions
+  if(newTodayCount) {
+    const notif = document.createElement("div");
+    notif.textContent = `🆕 ${newTodayCount} new submission${newTodayCount>1?'s':''}!`;
+    notif.style.textAlign = "center";
+    notif.style.padding = "5px";
+    notif.style.backgroundColor = "#fffae6";
+    notif.style.color = "#856404";
+    notif.style.fontWeight = "bold";
+    notif.style.border = "1px solid #ffeeba";
+    notif.style.borderRadius = "6px";
+    notif.style.marginBottom = "8px";
+    candidateListEl.prepend(notif);
+  }
+});
+
+// ===== RENDER CANDIDATE LIST =====
+function renderCandidateList(list) {
+  candidateListEl.innerHTML = "";
+  list.forEach(c => {
+    const item = document.createElement("div");
+    item.className = "candidate-item";
+
+    // Color coding
+    if(c.score >= 300) item.style.backgroundColor = "#d4edda";
+    else if(c.score >= 200) item.style.backgroundColor = "#fff3cd";
+    else item.style.backgroundColor = "#f8d7da";
+
+    item.textContent = `${c.name} — JAMB: ${c.score}` + (c.isNew ? " 🆕" : "");
+    item.onclick = () => showDetails(c.id);
+
+    // Attach long press
+    attachLongPress(item, c.id);
+
+    candidateListEl.appendChild(item);
+  });
+}
+
+// ===== LONG PRESS HANDLER =====
+function attachLongPress(item, candidateId) {
+  // Desktop
+  item.addEventListener("mousedown", (e) => {
+    longPressTimer = setTimeout(() => showContextMenu(e.pageX, e.pageY, candidateId), 700);
+  });
+  item.addEventListener("mouseup", () => clearTimeout(longPressTimer));
+  item.addEventListener("mouseleave", () => clearTimeout(longPressTimer));
+
+  // Mobile
+  item.addEventListener("touchstart", (e) => {
+    longPressTimer = setTimeout(() => {
+      const touch = e.touches[0];
+      showContextMenu(touch.pageX, touch.pageY, candidateId);
+    }, 700);
+  });
+  item.addEventListener("touchend", () => clearTimeout(longPressTimer));
+  item.addEventListener("touchmove", () => clearTimeout(longPressTimer));
+}
+
+function showContextMenu(x, y, candidateId) {
+  selectedCandidateId = candidateId;
+  contextMenu.style.left = x + "px";
+  contextMenu.style.top = y + "px";
+  contextMenu.style.display = "block";
+}
+
+// ===== DELETE OPTION CLICK =====
+deleteOption.addEventListener("click", async () => {
+  if(!selectedCandidateId) return;
+  const candidate = allCandidates.find(c => c.id === selectedCandidateId);
+  if(!candidate) return;
+
+  const confirmDel = confirm(`⚠️ Delete result of ${candidate.name}?`);
+  if(!confirmDel) {
+    contextMenu.style.display = "none";
+    return;
+  }
+
+  try {
+    await db.collection("cbtResults").doc(selectedCandidateId).delete();
+    alert(`Result of ${candidate.name} deleted!`);
+  } catch(err) {
+    console.error(err);
+    alert("Failed to delete result. Check console.");
+  }
+
+  contextMenu.style.display = "none";
+  selectedCandidateId = null;
+});
+
+// ===== HIDE CONTEXT MENU ON OUTSIDE CLICK =====
+document.addEventListener("click", (e) => { if(!contextMenu.contains(e.target)) contextMenu.style.display = "none"; });
+document.addEventListener("touchstart", (e) => { if(!contextMenu.contains(e.target)) contextMenu.style.display = "none"; });
+
+// ===== SEARCH =====
+searchBar.addEventListener("input", () => {
+  const term = searchBar.value.trim().toLowerCase();
+  const filtered = allCandidates.filter(c => c.name.toLowerCase().includes(term));
+  renderCandidateList(filtered);
+});
+
+// ===== SHOW DETAILS =====
+function showDetails(id) {
+  page1.style.display = "none";
+  page2.style.display = "block";
+  candidateDetailsEl.innerHTML = "<p class='spinner'>Loading...</p>";
+
+  const c = allCandidates.find(x => x.id === id);
+  if(!c) {
+    candidateDetailsEl.innerHTML = "<p>Result not found.</p>";
+    return;
+  }
+
+  const d = c.rawData;
+  candidateDetailsEl.innerHTML = "";
+
+  const t = d.submittedAt?.toDate?.() || d.time?.toDate?.() || null;
+
+  const info = document.createElement("div");
+  info.className = "detail-card";
+  info.innerHTML = `
+    <h3>${d.candidateName || "Unnamed Candidate"}</h3>
+    <p>Submitted: ${t ? t.toLocaleString() : "Not recorded"}</p>
+    <p>Raw Score: ${Number(d.rawScore) || 0}</p>
+    <p>JAMB Score: ${Number(d.jambScore) || 0}</p>
+    <p>Reason: ${d.reason || "CBT"}</p>
+  `;
+  candidateDetailsEl.appendChild(info);
+
+  const subjects = Array.isArray(d.subjects) ? d.subjects : [];
+  const answers = d.answers || {};
+
+  if (!subjects.length) candidateDetailsEl.innerHTML += "<p>No subject data.</p>";
+
+  subjects.forEach(s => {
+    const a = Array.isArray(answers[s]) ? answers[s] : [];
+    const total = a.length;
+    const answered = a.filter(v => v !== null && v !== "").length;
+    const card = document.createElement("div");
+    card.className = "detail-card";
+    card.innerHTML = `<h3>${s}</h3><p>Answered: ${answered} / ${total}</p>` +
+                     (answered < total ? "<p style='color:red;font-weight:bold;'>Incomplete!</p>" : "");
+    candidateDetailsEl.appendChild(card);
+  });
+}
+
+// ===== BACK BUTTON =====
+backBtn.onclick = () => {
+  page2.style.display = "none";
+  page1.style.display = "block";
+};
+
+// ===== EXPORT TO CSV =====
+exportBtn.onclick = () => {
+  if(!allCandidates.length) return alert("No results to export!");
+  const rows = [];
+  const headers = ["Name","JAMB Score","Raw Score","Submitted At","Reason","Subjects"];
+  rows.push(headers.join(","));
+
+  allCandidates.forEach(c => {
+    const d = c.rawData;
+    const subjectsStr = (d.subjects || []).map(s => `${s}: ${d.answers?.[s]?.length || 0}`).join(" | ");
+    const submitted = d.submittedAt?.toDate?.().toLocaleString() || "";
+    rows.push([d.candidateName || "", d.jambScore || "", d.rawScore || "", submitted, d.reason || "", `"${subjectsStr}"`].join(","));
+  });
+
+  const blob = new Blob([rows.join("\n")], {type: "text/csv"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `CBT_Results_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// ===== DELETE ALL =====
+const deleteAllBtn = document.getElementById("deleteAllBtn");
+deleteAllBtn.onclick = async () => {
+  if(!allCandidates.length) return alert("No results to delete!");
+  const confirmDelete = confirm("⚠️ Are you sure you want to DELETE ALL results? This cannot be undone!");
+  if(!confirmDelete) return;
+
+  try {
+    const snapshot = await db.collection("cbtResults").get();
+    const batch = db.batch();
+    snapshot.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
+    alert("All CBT results have been deleted!");
+  } catch (err) {
+    console.error("Error deleting results:", err);
+    alert("Failed to delete results. Check console for errors.");
+  }
+};
+</script>
+</body>
+</html>
